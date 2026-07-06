@@ -1,0 +1,70 @@
+Research Background: The "Universal Language" of UAVs and Its Inherent Weakness
+Unmanned Aerial Vehicles (UAVs) are increasingly prevalent across industries ranging from agriculture to law enforcement. At the core of this ecosystem lies MAVLink (Micro Air Vehicle Link) — a lightweight communication protocol that serves as the "universal language" between UAVs and their Ground Control Stations (GCS). However, MAVLink was designed with a fundamental tradeoff: it prioritizes computational efficiency and low power consumption over robust security.
+MAVLink 2.0 attempted to address this by introducing message signing — a mechanism that attaches a cryptographic signature to each packet for authentication and replay protection. This signature scheme relies heavily on a monotonically increasing timestamp. Previous research assumed that compromising this system required recovering the secret signing key. Our work challenges this assumption.
+
+The Problem: Can We Subvert UAV Timekeeping Without the Secret Key?
+The central research question of this study is:
+Can an attacker manipulate the MAVLink 2.0 signing logic without ever recovering the cryptographic key, purely by attacking the timestamp synchronization mechanism?
+This problem is challenging because of a fundamental contradiction in the protocol's design:
+The Anchor of Security: MAVLink 2.0's replay protection is built on the physical principle that time only moves forward. The UAV remembers the timestamp of the last valid signed message and rejects any message with an earlier timestamp as "stale." Time, therefore, serves as the anchor of the entire security architecture.
+ 	The Fragile Clock Source: However, many UAVs — particularly costsensitive models — lack a reliable internal RealTime Clock (RTC). Where do they obtain time? From GPS satellite signals, which broadcast highly precise timing information openly and without authentication. This creates a critical vulnerability: the security anchor is moored to an untrusted, easily spoofed public signal.
+The value of addressing this problem extends beyond UAVs. Any resourceconstrained cyberphysical system that relies on unauthenticated external time sources — such as IoT devices, connected vehicles, or industrial controllers — may face similar vulnerabilities.
+
+Key Finding: Time Itself Is the Weapon
+The core insight of this paper is a redefinition of the attack surface.
+While prior research focused on breaking the cryptographic "lock" (the signing key), we recognized that the true vulnerability lies in the reference system itself — time. Our finding is:
+> You don't need to forge a valid signature. You only need to make a legitimate signature travel to the wrong time.
+This insight transforms a seemingly unsolvable problem — "How can I send valid commands without the key?" — into a solvable one: "How can I manipulate the clock so that previously recorded legitimate messages become valid again?"
+The analogy is straightforward: Consider customs officers who rigorously verify visas (signatures) and check their issue dates (timestamps). An attacker cannot forge a visa. But if the attacker can advance the clock on the wall, then yesterday's valid traveler — whose visa was legitimate all along — suddenly appears to have a futuredated visa and is waved through. This is replay without forgery.
+Furthermore, what happens if the clock is pushed to its maximum value and overflows? The UAV enters an irrecoverable state where all realworld messages appear to be from the distant past — and are therefore rejected. This constitutes a permanent, jammingstyle Denial of Service (DoS) attack. The finding is powerful because it does not exploit implementation flaws; it exploits the protocol's logical dependency on an untrusted external input.
+
+Methodology: FourStage Attack in Three Experimental Tiers
+We designed a fourstage attack sequence, validated across three progressively realistic experimental tiers.
+Three Experimental Tiers:
+1.  SoftwareintheLoop (SITL): Fully simulated environment for rapid proofofconcept testing.
+2.  HardwareintheLoop (HITL): Real flight controller (Pixhawk 6C) connected via USB, with simulated flight dynamics.
+3.  Full Hardware Testing: Real UAV airframe communicating with GCS exclusively over SiK telemetry radio, with MAVLink 2.0 signing enabled endtoend. No USB connection present.
+
+Four Attack Stages:
+ Stage 1 — Replication of KeyBased Clock Manipulation
+   Input: A correctly keyed message with a future timestamp (e.g., a "LAND" command).
+   Action: Inject this message into the UAV communication channel.
+   Result: The UAV accepted the message and executed the landing. This confirmed that time manipulation has direct operational consequences.
+ Stage 2 — GPS Timestamp Spoofing Without Key Access
+   Input: Spoofed GPS_INPUT messages carrying falsified time data (e.g., time advanced by 10 days).
+   Action: Continuously feed these messages to the UAV via a Python script, mimicking a spoofed GPS signal.
+   Result: The UAV's internal signing time jumped forward by the exact spoofed offset. In full hardware tests, the GCSobserved `Received sig time` immediately reflected the jump (e.g., +86,400 seconds for one day). This demonstrated that the UAV's clock can be driven forward without any knowledge of the cryptographic key.
+ Stage 3 — Replay Attack via GPSAssisted Time Shifting
+   Input: A legitimate signed message recorded during a spoofed session.
+   Preconditions:
+    1. Advance the UAV's clock via GPS spoofing.
+    2. Record a valid signed command (e.g., LAND) during this spoofed state.
+    3. Reset the UAV's clock (simulating a new flight mission) while keeping the signing key unchanged.
+   Action: Replay the previously recorded "futuredated" message.
+   Result: In the full hardware test with active signature verification, the replayed message was accepted and the UAV executed the command. This validated that GPS spoofing enables successful replay attacks without key compromise.
+ Stage 4 — Permanent Denial of Service via Timestamp Overflow
+   Input: GPS time spoofed to the 48bit timestamp boundary (≈ year 2104).
+   Action: Drive the UAV's clock past the maximum representable 48bit value.
+   Mechanism: The 48bit MAVLink signature timestamp overflows and wraps to zero (year 2015 epoch), while the UAV's internal 64bit microsecond counter continues recording time far into the future. Consequently, all incoming signed messages bear timestamps that are smaller than the internal counter and are therefore classified as "stale."
+   Result: In full hardware tests, all subsequent signed packets were systematically rejected as having "bad signatures." The UAV entered a persistent, irrecoverable DoS state. Even a direct USB connection could not restore normal communication, and reflashing the firmware failed to clear the fault. This constitutes a permanent jammingstyle DoS attack requiring no key access whatsoever.
+
+ Results and Conclusions
+Experimental Results:
+| Experiment | SITL | HITL | Full Hardware |
+| GPS Clock Offset | ✓ Successful | ✓ Successful (after RTC bypass) | ✓ Successful |
+| Replay Attack | ✓ Concept proven | ✗ (USB bypassed signing) | ✓ Fully validated |
+| Timestamp Overflow DoS | ✓ Observed | ✓ Observed | ✓ Persistent and unrecoverable |
+Key Conclusions:
+1.  Attack Feasibility: The MAVLink 2.0 protocol possesses a fundamental vulnerability at the protocol level. An attacker without any cryptographic key material can successfully conduct replay attacks and multiple forms of DoS attacks solely through GPS timestamp spoofing.
+2.  Root Cause — Trust in Unauthenticated Inputs: The vulnerability stems from the protocol's design philosophy that trusts an unauthenticated external synchronization source. This violates the principle of securebydesign. While a UAV equipped with a highpriority RTC may be immune by default, the protocol must be secure for all compliant platforms, including the most costconstrained.
+3.  Broader Implications: The findings are not limited to UAVs. Any timesensitive, resourceconstrained system that relies on unauthenticated external time sources — such as VANETs, IoT networks, or industrial control systems — may be susceptible to analogous attacks.
+Supplementary Finding — SYSTEM_TIME Discrepancy:
+A notable technical detail emerged during testing. The UAV internally maintains a 64bit clock (in microseconds) that is separate from the 48bit MAVLink signature timestamp. After a timestamp overflow, the 48bit field wraps to zero, but the 64bit internal clock remains in the distant future. This mismatch creates an irreconcilable state: any legitimate message with a 48bit timestamp will always appear "stale" relative to the much larger internal 64bit value. This mechanism explains the persistent and irrecoverable nature of the overflowinduced DoS.
+
+ Glossary of Key Terms
+ MAVLink (Micro Air Vehicle Link, 微型飞行器链路通信协议): A lightweight messaging protocol used for communication between UAV components and ground control stations. It is the de facto standard in the opensource UAV ecosystem. Example: When a ground station sends a "return to home" command, it is encoded as a MAVLink message.
+ GPS Spoofing (GPS欺骗): An attack technique where counterfeit GPS signals are broadcast to deceive a receiver into computing an incorrect position or time. Example: The attack script in this study sent forged GPS_INPUT messages that caused the UAV to believe it was ten days in the future.
+ Timestamp (时间戳): In this context, a 48bit field within the MAVLink 2.0 signature, representing time in 10microsecond units since January 1, 2015. It is used to enforce message freshness and prevent replay attacks. Example: The protocol rejects any message whose timestamp is less than or equal to the last recorded valid timestamp.
+ Replay Attack (重放攻击): A form of network attack where valid data transmissions are maliciously repeated or delayed. Example: An attacker records a "LAND" command during one flight and replays it during a subsequent flight to force the UAV down.
+ Denial of Service (DoS, 拒绝服务攻击): An attack that renders a system unavailable to its intended users. Example: By overflowing the MAVLink timestamp, the attacker caused the UAV to permanently reject all legitimate GCS communication, effectively jamming the command link.
+
